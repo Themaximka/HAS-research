@@ -7,6 +7,7 @@ import gspread
 import streamlit as st
 from filelock import FileLock
 from google.oauth2.service_account import Credentials
+from gspread.exceptions import APIError
 
 POSITION_TASKS = {
     "Администратор базы данных": [
@@ -99,8 +100,10 @@ def append_results_csv(rows: list[dict]) -> None:
 def get_gsheet_client():
     if "gcp_service_account" not in st.secrets:
         return None
+    service_account = dict(st.secrets["gcp_service_account"])
+    service_account["private_key"] = service_account.get("private_key", "").replace("\\n", "\n")
     creds = Credentials.from_service_account_info(
-        dict(st.secrets["gcp_service_account"]),
+        service_account,
         scopes=GSHEET_SCOPES,
     )
     return gspread.authorize(creds)
@@ -116,7 +119,13 @@ def append_results_to_gsheet(rows: list[dict]) -> tuple[bool, str]:
     if client is None:
         return False, "В secrets не задан блок gcp_service_account."
 
-    spreadsheet = client.open_by_key(spreadsheet_id)
+    try:
+        spreadsheet = client.open_by_key(spreadsheet_id)
+    except gspread.SpreadsheetNotFound:
+        return False, (
+            "Таблица не найдена или нет доступа. Проверьте google_sheet_id и доступ Editor "
+            "для service account (client_email)."
+        )
     try:
         worksheet = spreadsheet.worksheet(worksheet_name)
     except gspread.WorksheetNotFound:
@@ -127,7 +136,10 @@ def append_results_to_gsheet(rows: list[dict]) -> tuple[bool, str]:
         worksheet.update("A1:F1", [CSV_FIELDS])
 
     values = [[row.get(field, "") for field in CSV_FIELDS] for row in rows]
-    worksheet.append_rows(values, value_input_option="RAW")
+    try:
+        worksheet.append_rows(values, value_input_option="RAW")
+    except APIError as exc:
+        return False, f"Google API Error: {exc}"
     return True, ""
 
 
