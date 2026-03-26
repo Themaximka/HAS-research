@@ -1,4 +1,4 @@
-import csv
+﻿import csv
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -6,26 +6,38 @@ from pathlib import Path
 import streamlit as st
 from filelock import FileLock
 
-TASKS = [
-    "Автоматический ответ на электронные письма",
-    "Анализ данных продаж",
-    "Создание отчётов",
-    "Подбор персонала",
-    "Поддержка клиентов в чате",
-]
+POSITION_TASKS = {
+    "Администратор базы данных": [
+        "Модификация существующих баз данных и систем управления базами данных",
+        "Применение мер безопасности для защиты информации в компьютерных файлах",
+        "Установка обновлений программного обеспечения системы управления базами данных",
+        "Назначение пользователей и уровней доступа для каждого сегмента базы данных",
+        "Тестирование изменений в приложениях или системах баз данных",
+        "Тестирование, исправление ошибок и внесение необходимых изменений",
+        "Обучение пользователей и ответы на вопросы",
+    ],
+    "Data Scientists": [
+        "Анализ, обработка и преобразование больших массивов данных с помощью статистического ПО",
+        "Применение алгоритмов отбора признаков для прогноза целевых результатов",
+        "Применение методов выборки для обследований или использование методов полного учета",
+        "Очистка исходных данных и их обработка статистическим ПО",
+        "Сравнение моделей по статистическим метрикам качества",
+    ],
+}
 
 RESULTS_PATH = Path("results.csv")
 LOCK_PATH = Path("results.csv.lock")
+CSV_FIELDS = ["user_id", "timestamp", "position", "task", "ability", "interaction"]
 
 
-def init_session() -> None:
+def init_session(position_key: str, tasks: list[str]) -> None:
     if "user_id" not in st.session_state:
         st.session_state.user_id = str(uuid.uuid4())
 
-    for i in range(len(TASKS)):
-        exclude_key = f"exclude_{i}"
-        ability_key = f"ability_{i}"
-        interaction_key = f"interaction_{i}"
+    for i in range(len(tasks)):
+        exclude_key = f"exclude_{position_key}_{i}"
+        ability_key = f"ability_{position_key}_{i}"
+        interaction_key = f"interaction_{position_key}_{i}"
 
         if exclude_key not in st.session_state:
             st.session_state[exclude_key] = False
@@ -35,49 +47,69 @@ def init_session() -> None:
             st.session_state[interaction_key] = 3
 
 
-def ensure_csv_exists() -> None:
-    if RESULTS_PATH.exists():
+def ensure_csv_schema_locked() -> None:
+    if not RESULTS_PATH.exists():
+        with RESULTS_PATH.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+            writer.writeheader()
         return
-    with RESULTS_PATH.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["user_id", "timestamp", "task", "ability", "interaction"],
+
+    with RESULTS_PATH.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        existing_fields = reader.fieldnames or []
+        rows = list(reader)
+
+    if existing_fields == CSV_FIELDS:
+        return
+
+    migrated = []
+    for row in rows:
+        migrated.append(
+            {
+                "user_id": row.get("user_id", ""),
+                "timestamp": row.get("timestamp", ""),
+                "position": row.get("position", ""),
+                "task": row.get("task", ""),
+                "ability": row.get("ability", ""),
+                "interaction": row.get("interaction", ""),
+            }
         )
+
+    with RESULTS_PATH.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         writer.writeheader()
+        writer.writerows(migrated)
 
 
 def append_results(rows: list[dict]) -> None:
-    ensure_csv_exists()
     with FileLock(str(LOCK_PATH)):
+        ensure_csv_schema_locked()
         with RESULTS_PATH.open("a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(
-                f,
-                fieldnames=["user_id", "timestamp", "task", "ability", "interaction"],
-            )
+            writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
             writer.writerows(rows)
 
 
-def render_row(index: int, task: str) -> dict | None:
-    exclude_key = f"exclude_{index}"
-    ability_key = f"ability_{index}"
-    interaction_key = f"interaction_{index}"
+def render_row(position_key: str, index: int, task: str) -> dict | None:
+    exclude_key = f"exclude_{position_key}_{index}"
+    ability_key = f"ability_{position_key}_{index}"
+    interaction_key = f"interaction_{position_key}_{index}"
     is_excluded = st.session_state[exclude_key]
 
-    col_task, col_ability, col_interaction = st.columns([3, 2, 2])
+    col_task, col_ability, col_interaction = st.columns([3, 2, 2], vertical_alignment="center")
 
     with col_task:
-        check_col, text_col = st.columns([1, 16])
+        check_col, text_col = st.columns([1, 20], vertical_alignment="center")
         with check_col:
             st.checkbox("", key=exclude_key, label_visibility="collapsed")
         is_excluded = st.session_state[exclude_key]
         with text_col:
             if is_excluded:
                 st.markdown(
-                    f"<span style='text-decoration: line-through;'>{task}</span>",
+                    f"<div style='text-decoration: line-through; margin-top: 0.1rem;'>{task}</div>",
                     unsafe_allow_html=True,
                 )
             else:
-                st.markdown(task)
+                st.markdown(f"<div style='margin-top: 0.1rem;'>{task}</div>", unsafe_allow_html=True)
 
     with col_ability:
         ability = st.radio(
@@ -111,22 +143,28 @@ def render_row(index: int, task: str) -> dict | None:
 
 def main() -> None:
     st.set_page_config(page_title="Опросник функциональных задач", layout="wide")
-    init_session()
 
     st.title("Опросник функциональных задач")
     st.write(
-        "Нажмите на название задачи, чтобы исключить её из оценки (строка будет зачёркнута). "
-        "Для остальных задач выберите оценки от 1 до 5 по двум вопросам."
+        "Выберите должность, затем оцените только релевантные задачи. "
+        "Чтобы исключить задачу, снимите галочку: строка будет зачеркнута и не попадет в результаты."
     )
 
+    positions = list(POSITION_TASKS.keys())
+    selected_position = st.selectbox("Ваша должность", positions)
+    tasks = POSITION_TASKS[selected_position]
+    position_key = str(positions.index(selected_position))
+
+    init_session(position_key, tasks)
+
     header_cols = st.columns([3, 2, 2])
-    header_cols[0].markdown("**Задача (нажмите, чтобы исключить)**")
+    header_cols[0].markdown("**Задача (снимите галочку, чтобы исключить)**")
     header_cols[1].markdown("**Сможет ли ИИ-агент справиться? (1-5)**")
     header_cols[2].markdown("**Уровень взаимодействия человек-агент (1-5)**")
 
     current_answers = []
-    for i, task in enumerate(TASKS):
-        row = render_row(i, task)
+    for i, task in enumerate(tasks):
+        row = render_row(position_key, i, task)
         if row:
             current_answers.append(row)
 
@@ -141,6 +179,7 @@ def main() -> None:
             {
                 "user_id": user_id,
                 "timestamp": timestamp,
+                "position": selected_position,
                 "task": answer["task"],
                 "ability": answer["ability"],
                 "interaction": answer["interaction"],
