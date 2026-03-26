@@ -1,2 +1,4 @@
 streamlit>=1.40.0
 filelock>=3.16.1
+gspread>=6.1.4
+google-auth>=2.35.0

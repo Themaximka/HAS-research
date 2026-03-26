@@ -3,8 +3,10 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import gspread
 import streamlit as st
 from filelock import FileLock
+from google.oauth2.service_account import Credentials
 
 POSITION_TASKS = {
     "Администратор базы данных": [
@@ -28,6 +30,10 @@ POSITION_TASKS = {
 RESULTS_PATH = Path("results.csv")
 LOCK_PATH = Path("results.csv.lock")
 CSV_FIELDS = ["user_id", "timestamp", "position", "task", "ability", "interaction"]
+GSHEET_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
 
 def init_session(position_key: str, tasks: list[str]) -> None:
@@ -81,12 +87,48 @@ def ensure_csv_schema_locked() -> None:
         writer.writerows(migrated)
 
 
-def append_results(rows: list[dict]) -> None:
+def append_results_csv(rows: list[dict]) -> None:
     with FileLock(str(LOCK_PATH)):
         ensure_csv_schema_locked()
         with RESULTS_PATH.open("a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
             writer.writerows(rows)
+
+
+@st.cache_resource
+def get_gsheet_client():
+    if "gcp_service_account" not in st.secrets:
+        return None
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]),
+        scopes=GSHEET_SCOPES,
+    )
+    return gspread.authorize(creds)
+
+
+def append_results_to_gsheet(rows: list[dict]) -> tuple[bool, str]:
+    spreadsheet_id = st.secrets.get("google_sheet_id", "").strip()
+    worksheet_name = st.secrets.get("google_sheet_worksheet", "results").strip()
+    if not spreadsheet_id:
+        return False, "В secrets не задан google_sheet_id."
+
+    client = get_gsheet_client()
+    if client is None:
+        return False, "В secrets не задан блок gcp_service_account."
+
+    spreadsheet = client.open_by_key(spreadsheet_id)
+    try:
+        worksheet = spreadsheet.worksheet(worksheet_name)
+    except gspread.WorksheetNotFound:
+        worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=2000, cols=12)
+
+    existing_header = worksheet.row_values(1)
+    if existing_header != CSV_FIELDS:
+        worksheet.update("A1:F1", [CSV_FIELDS])
+
+    values = [[row.get(field, "") for field in CSV_FIELDS] for row in rows]
+    worksheet.append_rows(values, value_input_option="RAW")
+    return True, ""
 
 
 def render_row(position_key: str, index: int, task: str) -> dict | None:
@@ -186,8 +228,20 @@ def main() -> None:
             }
             for answer in current_answers
         ]
-        append_results(rows_to_save)
-        st.success(f"Ответы сохранены. Ваш ID: {user_id}")
+
+        try:
+            saved_to_gsheet, reason = append_results_to_gsheet(rows_to_save)
+        except Exception as exc:
+            saved_to_gsheet, reason = False, str(exc)
+
+        if saved_to_gsheet:
+            st.success(f"Ответы сохранены в Google Sheets. Ваш ID: {user_id}")
+        else:
+            append_results_csv(rows_to_save)
+            st.warning(
+                "Не удалось сохранить в Google Sheets, ответы записаны в локальный CSV. "
+                f"Причина: {reason}"
+            )
 
 
 if __name__ == "__main__":
