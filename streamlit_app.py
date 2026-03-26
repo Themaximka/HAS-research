@@ -101,6 +101,10 @@ def get_gsheet_client():
     if "gcp_service_account" not in st.secrets:
         return None
     service_account = dict(st.secrets["gcp_service_account"])
+    required = ["project_id", "private_key", "client_email", "token_uri"]
+    missing = [key for key in required if not service_account.get(key)]
+    if missing:
+        raise ValueError(f"В gcp_service_account отсутствуют поля: {', '.join(missing)}")
     service_account["private_key"] = service_account.get("private_key", "").replace("\\n", "\n")
     creds = Credentials.from_service_account_info(
         service_account,
@@ -244,11 +248,14 @@ def main() -> None:
         try:
             saved_to_gsheet, reason = append_results_to_gsheet(rows_to_save)
         except Exception as exc:
-            saved_to_gsheet, reason = False, str(exc)
+            details = str(exc).strip() or repr(exc)
+            saved_to_gsheet, reason = False, f"{type(exc).__name__}: {details}"
 
         if saved_to_gsheet:
             st.success(f"Ответы сохранены в Google Sheets. Ваш ID: {user_id}")
         else:
+            if not reason.strip():
+                reason = "Неизвестная ошибка инициализации Google Sheets."
             append_results_csv(rows_to_save)
             st.warning(
                 "Не удалось сохранить в Google Sheets, ответы записаны в локальный CSV. "
