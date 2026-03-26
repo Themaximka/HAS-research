@@ -130,10 +130,20 @@ def append_results_to_gsheet(rows: list[dict]) -> tuple[bool, str]:
             "Таблица не найдена или нет доступа. Проверьте google_sheet_id и доступ Editor "
             "для service account (client_email)."
         )
+    except PermissionError:
+        return False, (
+            "Нет прав доступа к Google Sheets. Откройте таблицу и выдайте права Editor "
+            "для service account (client_email из secrets)."
+        )
     try:
         worksheet = spreadsheet.worksheet(worksheet_name)
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=2000, cols=12)
+        try:
+            worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=2000, cols=12)
+        except PermissionError:
+            return False, (
+                "Нет прав на создание листа в таблице. Выдайте service account роль Editor."
+            )
 
     existing_header = worksheet.row_values(1)
     if existing_header != CSV_FIELDS:
@@ -144,7 +154,12 @@ def append_results_to_gsheet(rows: list[dict]) -> tuple[bool, str]:
         worksheet.append_rows(values, value_input_option="RAW")
     except APIError as exc:
         return False, f"Google API Error: {exc}"
-    return True, ""
+    except PermissionError:
+        return False, (
+            "Нет прав на запись в таблицу. Выдайте service account роль Editor."
+        )
+    sheet_link = f"{spreadsheet.url}#gid={worksheet.id}"
+    return True, f"Лист: {worksheet.title}. Ссылка: {sheet_link}"
 
 
 def render_row(position_key: str, index: int, task: str) -> dict | None:
@@ -153,10 +168,8 @@ def render_row(position_key: str, index: int, task: str) -> dict | None:
     interaction_key = f"interaction_{position_key}_{index}"
     is_excluded = st.session_state[exclude_key]
 
-    col_task, col_ability, col_interaction = st.columns([3, 2, 2], vertical_alignment="center")
-
-    with col_task:
-        check_col, text_col = st.columns([1, 20], vertical_alignment="center")
+    with st.container(border=True):
+        check_col, text_col = st.columns([1, 16], vertical_alignment="center")
         with check_col:
             st.checkbox("", key=exclude_key, label_visibility="collapsed")
         is_excluded = st.session_state[exclude_key]
@@ -169,24 +182,20 @@ def render_row(position_key: str, index: int, task: str) -> dict | None:
             else:
                 st.markdown(f"<div style='margin-top: 0.1rem;'>{task}</div>", unsafe_allow_html=True)
 
-    with col_ability:
         ability = st.radio(
-            " ",
+            "Сможет ли ИИ-агент справиться? (1-5)",
             options=[1, 2, 3, 4, 5],
             horizontal=True,
             key=ability_key,
             disabled=is_excluded,
-            label_visibility="collapsed",
         )
 
-    with col_interaction:
         interaction = st.radio(
-            "  ",
+            "Уровень взаимодействия человек-агент (1-5)",
             options=[1, 2, 3, 4, 5],
             horizontal=True,
             key=interaction_key,
             disabled=is_excluded,
-            label_visibility="collapsed",
         )
 
     if is_excluded:
@@ -207,6 +216,17 @@ def main() -> None:
         "Выберите должность, затем оцените только релевантные задачи. "
         "Чтобы исключить задачу, снимите галочку: строка будет зачеркнута и не попадет в результаты."
     )
+    st.markdown(
+        """
+        <style>
+          .block-container {padding-top: 1.2rem; padding-bottom: 4rem;}
+          @media (max-width: 768px) {
+            .block-container {padding-left: 0.8rem; padding-right: 0.8rem;}
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     positions = list(POSITION_TASKS.keys())
     selected_position = st.selectbox("Ваша должность", positions)
@@ -215,10 +235,7 @@ def main() -> None:
 
     init_session(position_key, tasks)
 
-    header_cols = st.columns([3, 2, 2])
-    header_cols[0].markdown("**Задача (снимите галочку, чтобы исключить)**")
-    header_cols[1].markdown("**Сможет ли ИИ-агент справиться? (1-5)**")
-    header_cols[2].markdown("**Уровень взаимодействия человек-агент (1-5)**")
+    st.markdown("**Задачи для оценки**")
 
     current_answers = []
     for i, task in enumerate(tasks):
@@ -252,7 +269,9 @@ def main() -> None:
             saved_to_gsheet, reason = False, f"{type(exc).__name__}: {details}"
 
         if saved_to_gsheet:
-            st.success(f"Ответы сохранены в Google Sheets. Ваш ID: {user_id}")
+            st.success(
+                f"Ответы сохранены в Google Sheets. Ваш ID: {user_id}. {reason}"
+            )
         else:
             if not reason.strip():
                 reason = "Неизвестная ошибка инициализации Google Sheets."
